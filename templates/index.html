@@ -1,0 +1,90 @@
+<!-- HTML Code For the main page which contains the search box and h1 title for the search engine -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Search Engine</title>
+  <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body, html {
+      height: 100%;
+      margin: 0;
+      background: #ffffff;
+    }
+    .center-container {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+    }
+    .search-box {
+      width: 40%;
+      min-width: 300px;
+    }
+
+    .search-box input {
+      background: #e1e1e1;
+    }
+
+    .search-box input, .search-box button {
+      border-radius: 50px;
+    }
+    .progress-container {
+      margin-top: 10px;
+      width: 100%;
+      display: none;
+    }
+    h1 {
+      text-align: center;
+      font-size: 100px;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="center-container">
+    <h1>Group 21 Search Engine</h1>
+    <div class="search-box">
+      <form id="search-form">
+        <div class="input-group">
+          <input type="text" class="form-control" placeholder="Search..." name="query" required>
+          <div class="input-group-append">
+            <button class="btn btn-primary" type="submit">Search</button>
+          </div>
+        </div>
+      </form>
+      <div class="progress-container" id="progress-container">
+        <div class="progress">
+          <div id="progress-bar" class="progress-bar progress-bar-striped" role="progressbar" style="width: 0%">0%</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+  <!-- this script handles the search form submission and shows the progress bars progress and redicteds the user to results -->
+  <script>
+    //handles the data passed into the search box
+    $("#search-form").on("submit", function(e){
+      e.preventDefault(); //prevents the search box from using the deafult form submisison
+      var query = $("input[name='query']").val(); //get the search query from input 
+      $("#progress-container").show(); // show the user the progress bar 
+      //send the query to the server where the search would begin
+      $.post("/start_search", {query: query}, function(data){ 
+        //intialise a connection to recieve the progress updates and save it to source
+        var source = new EventSource("/progress?query=" + encodeURIComponent(query));
+        //update the progress bar
+        source.onmessage = function(event) {
+          var progress = event.data;
+          $("#progress-bar").css("width", progress + "%").text(progress + "%");
+          //once progress bar has reached 100% then close the connection by doing soruce.close and then redirect the suer to results page
+          if (parseInt(progress) >= 100) {
+            source.close();
+            window.location.href = "/results?query=" + encodeURIComponent(query) + "&page=1";
+          }
+        };
+      });
+    });
+  </script>
+</body>
+</html>
