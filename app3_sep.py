@@ -4,7 +4,7 @@ import os, re, math, pickle, string, threading, time
 import nltk
 from nltk.corpus import stopwords, words
 import nltk.stem
-from augment import generate_augmented_queries# generate_answer
+from augment import generate_augmented_queries, generate_answer
 nltk.download('stopwords')
 nltk.download('words')
 nltk.download('punkt_tab')
@@ -123,7 +123,7 @@ def bm25_score_tokens(query_tokens, doc):
 
 search_jobs = {}
 
-#fucntion to rank documents for current query
+#fucntion to rank documents for current query and generate answer using RAG
 def search_worker(query):
     #call function generate_augmented_queries pass query save output to augmented_queries
     augmented_queries = generate_augmented_queries(query)
@@ -157,8 +157,8 @@ def search_worker(query):
     if not candidate_docs:
         #set progrees bar for the query to 100 
         search_jobs[query]['progress'] = 100
-        #store an empty result list so we can display to the user nothing has been found 
-        search_jobs[query]['results'] = []
+        #store an empty answer so we can display to the user nothing has been found 
+        search_jobs[query]['answer'] = "No relevant documents found to answer your query."
         return
     
     #create empty array which will store scores 
@@ -176,19 +176,50 @@ def search_worker(query):
         #check if aggregated_score is greater than 0
         if aggregated_score > 0:
             #to scores apped a tuple of document id, document title, document url and its bm25 score 
-            scores.append((doc['id'], doc['title'], doc['url'], aggregated_score))
+            scores.append((doc_idx, doc['id'], doc['title'], doc['url'], aggregated_score))
 
         #code to compute progress of current search job 
         if (i + 1) % 100 == 0 or (i + 1) == total_candidate_length:
-            #calculate progress in percentage
-            progress = int((i + 1) / total_candidate_length * 100)
+            #calculate progress in percentage (50% for retrieval, 50% for generation)
+            progress = int((i + 1) / total_candidate_length * 50)
             #update the progress for the users current query
             search_jobs[query]['progress'] = progress
-    #sort scores by the third element and have it in descending order where the first index has the highest score 
-    scores.sort(key=lambda x: x[3], reverse=True)
     
-    #set the results for the query to scores list which is in descending order where the first index has the highest score 
-    search_jobs[query]['results'] = scores
+    #sort scores by the fourth element (score) and have it in descending order where the first index has the highest score 
+    scores.sort(key=lambda x: x[4], reverse=True)
+    
+    #get top 5 documents for RAG
+    top_5_docs = scores[:5]
+    
+    #update progress to 60% (retrieval complete, starting generation)
+    search_jobs[query]['progress'] = 60
+    
+    #retrieve the full document objects for the top 5 documents
+    retrieved_documents = []
+    for doc_idx, doc_id, title, url, score in top_5_docs:
+        #get the full document from docs using doc_idx
+        doc = docs[doc_idx]
+        #get the text field from the document, use empty string as fallback if not available
+        doc_text = doc.get('text', '')
+        retrieved_documents.append({
+            'id': doc_id,
+            'title': title,
+            'url': url,
+            'text': doc_text
+        })
+    
+    #update progress to 80% (documents retrieved, generating answer)
+    search_jobs[query]['progress'] = 80
+    
+    #generate answer using RAG with the query and retrieved documents
+    answer = generate_answer(query, retrieved_documents)
+    
+    #store the answer and retrieved documents in search_jobs
+    search_jobs[query]['answer'] = answer
+    search_jobs[query]['retrieved_docs'] = retrieved_documents
+    
+    #set progress to 100% (complete)
+    search_jobs[query]['progress'] = 100
 
 
 #main page 
@@ -206,8 +237,8 @@ def start_search():
     if not query:
         return jsonify({"error": "No query provided"}), 400
     
-    #intialise a new search job with results set to none and progress set to 0 
-    search_jobs[query] = {"progress": 0, "results": None}
+    #intialise a new search job with answer set to none and progress set to 0 
+    search_jobs[query] = {"progress": 0, "answer": None}
 
     #start new thread that will run the search
     thread = threading.Thread(target=search_worker, args=(query,))
@@ -229,32 +260,27 @@ def progress():
     #return the progress of the query
     return f"data:{progress}\n\n", 200, {'Content-Type': 'text/event-stream'}
 
-#route to show the search results 
-@app.route("/results")
-def results():
-    #get the query and page number 
+#route to get the answer from RAG model as JSON
+@app.route("/get_answer")
+def get_answer():
+    #get the query
     query = request.args.get("query")
-    # gen_ans = generate_answer(query)
-    page = request.args.get("page", 1, type=int)
-   #if query is not found within search jobs or query results are None then return results not ready message
-    if query not in search_jobs or search_jobs[query]['results'] is None:
-        return "Results not ready", 202
+    #if query is not found within search jobs or query answer is None then return answer not ready message
+    if query not in search_jobs or search_jobs[query]['answer'] is None:
+        return jsonify({"status": "not_ready"}), 202
     
-    #get the results for the specific query and set up the pages to display 10 results per page and have 10 pages in total
-    scores = search_jobs[query]['results']
+    #get the answer and retrieved documents for the specific query
+    answer = search_jobs[query]['answer']
+    retrieved_docs = search_jobs[query].get('retrieved_docs', [])
     augmented_queries = search_jobs[query].get('augmented', [])
-    total_results = len(scores)
-    per_page = 10
-    start = (page - 1) * per_page
-    end = start + per_page
-    paged_scores = scores[start:end]
-    total_pages = math.ceil(total_results / per_page)
-    total_pages = min(total_pages, 10)
-    #if there are no results found then show empty results page else display the results 10 results per page with 10 total pages
-    if total_results == 0:
-        return render_template("results.html", results=[], query=query, page=page, total_pages=total_pages, augmented_queries=augmented_queries)
-    else:
-        return render_template("results.html", results=paged_scores, query=query, page=page, total_pages=total_pages, augmented_queries=augmented_queries)
+    
+    #return JSON response with answer and retrieved documents
+    return jsonify({
+        "status": "ready",
+        "answer": answer,
+        "retrieved_docs": retrieved_docs,
+        "augmented_queries": augmented_queries
+    })
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(debug=True, use_reloader=False, port=5000)
